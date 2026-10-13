@@ -1,0 +1,73 @@
+USER
+                      |
+                      v
+             +----------------+
+             |   Amazon S3    |
+             | HTML/CSS/JS    |
+             +----------------+
+                      |
+                   HTTPS
+                      |
+                      v
+             +----------------+
+             |  API Gateway   |
+             |   POST /contact|
+             +----------------+
+                      |
+                      v
+             +----------------+
+             |    Lambda      |
+             |  Python code   |
+             +----------------+
+                 /         \
+                /           \
+               v             v
+      +---------------+   +---------------+
+      |   DynamoDB    |   |      SNS      |
+      | Store message |   | Email alert   |
+      +---------------+   +---------------+
+
+/
+look like
+
+ INTERNET
+                            |
+                            v
+                    +---------------+
+                    |      S3       |
+                    | index.html    |
+                    +---------------+
+                            |
+                            | HTTPS
+                            v
+                    +---------------+
+                    | API GATEWAY   |
+                    | POST /contact |
+                    +---------------+
+                            |
+                            v
+                    +---------------+
+                    |    LAMBDA     |
+                    | Python/Boto3  |
+                    +---------------+
+                       /         \
+                      /           \
+                     v             v
+            +---------------+   +---------------+
+            |   DYNAMODB    |   |      SNS      |
+            |ContactMessages|   |Notifications  |
+            +---------------+   +---------------+
+                                      |
+                                      v
+                                    EMAIL
+
+
+              +----------------------+
+              |         IAM          |
+              | Lambda permissions   |
+              +----------------------+
+                    |          |
+                    +----------+
+                         |
+                    Lambda Role
+
