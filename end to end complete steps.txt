@@ -1,0 +1,1615 @@
+
+**IAM → Lambda → DynamoDB → API Gateway → SNS → S3**
+
+A simple project is a **Contact/Feedback application**:
+
+* User opens a website hosted in **S3**
+* User enters **name, email, message**
+* Website calls **API Gateway**
+* API Gateway invokes **Lambda**
+* Lambda saves the message in **DynamoDB**
+* Lambda publishes a notification to **SNS**
+* SNS sends an email notification to you
+
+### Architecture
+
+```text
+                    USER
+                      |
+                      v
+             +----------------+
+             |   Amazon S3    |
+             | HTML/CSS/JS    |
+             +----------------+
+                      |
+                   HTTPS
+                      |
+                      v
+             +----------------+
+             |  API Gateway   |
+             |   POST /contact|
+             +----------------+
+                      |
+                      v
+             +----------------+
+             |    Lambda      |
+             |  Python code   |
+             +----------------+
+                 /         \
+                /           \
+               v             v
+      +---------------+   +---------------+
+      |   DynamoDB    |   |      SNS      |
+      | Store message |   | Email alert   |
+      +---------------+   +---------------+
+---
+
+# PART 1 — Choose your AWS Region
+
+For this entire project, use **one AWS Region**.
+
+For example:
+
+```text
+Asia Pacific (Mumbai)
+ap-south-1
+```
+
+or another region close to you.
+
+### Why?
+
+Keeping Lambda, DynamoDB, SNS and S3 in the same region makes the architecture simpler and avoids unnecessary cross-region considerations.
+
+At the top-right of the AWS Console, select your region.
+
+---
+
+# PART 2 — IAM
+
+IAM controls **what your Lambda function is allowed to do**.
+
+We need a role that allows Lambda to:
+
+1. Write to DynamoDB
+2. Publish to SNS
+3. Write logs to CloudWatch
+
+AWS recommends using an execution role for Lambda permissions. ([AWS Documentation][4])
+
+## Step 2.1 — Open IAM
+
+AWS Console:
+
+```text
+IAM
+   ↓
+Roles
+   ↓
+Create role
+```
+
+Choose:
+
+```text
+Trusted entity type:
+AWS service
+```
+
+For service/use case:
+
+```text
+Service: Lambda
+```
+
+Click:
+
+```text
+Next
+```
+
+---
+
+# PART 3 — Create DynamoDB
+
+Now create the database before writing the Lambda code.
+
+Open:
+
+```text
+AWS Console
+→ DynamoDB
+→ Tables
+→ Create table
+```
+
+Enter:
+
+```text
+Table name:
+ContactMessages
+```
+
+Partition key:
+
+```text
+id
+```
+
+Type:
+
+```text
+String
+```
+
+For a beginner project, leave the other settings at their defaults.
+
+Click:
+
+```text
+Create table
+```
+
+You should eventually see:
+
+```text
+ContactMessages
+Status: Active
+```
+
+DynamoDB's current free tier includes provisioned capacity allowances and storage that are suitable for a small learning application. ([Amazon Web Services, Inc.][5])
+
+---
+
+# PART 4 — Create SNS
+
+SNS will send an email when somebody submits the contact form.
+
+Open:
+
+```text
+AWS Console
+→ SNS
+→ Topics
+→ Create topic
+```
+
+Choose:
+
+```text
+Type:
+Standard
+```
+
+Name:
+
+```text
+ContactNotifications
+```
+
+Click:
+
+```text
+Create topic
+```
+
+You'll get something similar to:
+
+```text
+arn:aws:sns:ap-south-1:123456789012:ContactNotifications
+```
+
+**Copy this ARN somewhere.**
+
+We'll need it in Lambda.
+
+---
+
+# PART 5 — Create SNS Email Subscription
+
+Open your topic:
+
+```text
+ContactNotifications
+```
+
+Go to:
+
+```text
+Subscriptions
+→ Create subscription
+```
+
+Protocol:
+
+```text
+Email
+```
+
+Endpoint:
+
+```text
+YOUR_EMAIL_ADDRESS
+```
+
+For example:
+
+```text
+yourname@example.com
+```
+
+Click:
+
+```text
+Create subscription
+```
+
+AWS will send a confirmation email.
+
+Open your email and click:
+
+```text
+Confirm subscription
+```
+
+### Important
+
+If you don't confirm the subscription, SNS will not send the notification.
+
+---
+
+# PART 6 — Create the IAM Policy
+
+Now return to:
+
+```text
+IAM
+→ Policies
+→ Create policy
+```
+
+Choose the **JSON** editor.
+
+Use this policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:PutItem"
+      ],
+      "Resource": "arn:aws:dynamodb:ap-south-1:YOUR_ACCOUNT_ID:table/ContactMessages"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "sns:Publish"
+      ],
+      "Resource": "arn:aws:sns:ap-south-1:YOUR_ACCOUNT_ID:ContactNotifications"
+    }
+  ]
+}
+```
+
+### Change these:
+
+```text
+YOUR_ACCOUNT_ID
+```
+
+to your AWS account ID.
+
+And if you're using a region other than Mumbai, change:
+
+```text
+ap-south-1
+```
+
+to your region.
+
+For example:
+
+```text
+us-east-1
+```
+
+---
+
+## Step 6.1 — Policy name
+
+Use:
+
+```text
+ContactAppLambdaPolicy
+```
+
+Click:
+
+```text
+Create policy
+```
+
+---
+
+# PART 7 — Attach the policy to Lambda role
+
+Go back to:
+
+```text
+IAM
+→ Roles
+```
+
+Find the role you created for Lambda.
+
+For example:
+
+```text
+ContactAppLambdaRole
+```
+
+Open it.
+
+Choose:
+
+```text
+Add permissions
+→ Attach policies
+```
+
+Search:
+
+```text
+ContactAppLambdaPolicy
+```
+
+Select it.
+
+Click:
+
+```text
+Add permissions
+```
+
+Your Lambda will now have permission to write to DynamoDB and publish to SNS.
+
+---
+
+# PART 8 — Create Lambda
+
+Open:
+
+```text
+AWS Console
+→ Lambda
+→ Functions
+→ Create function
+```
+
+Select:
+
+```text
+Author from scratch
+```
+
+Function name:
+
+```text
+ContactAppFunction
+```
+
+Runtime:
+
+```text
+Python 3.x
+```
+
+For architecture, leave the default.
+
+Under permissions choose:
+
+```text
+Use an existing role
+```
+
+Select:
+
+```text
+ContactAppLambdaRole
+```
+
+Click:
+
+```text
+Create function
+```
+
+---
+
+# PART 9 — Lambda Code
+
+Open your Lambda function.
+
+Go to:
+
+```text
+Code
+→ lambda_function.py
+```
+
+Delete the existing code.
+
+Put this in:
+
+```python
+import json
+import uuid
+import boto3
+from datetime import datetime
+
+dynamodb = boto3.resource("dynamodb")
+sns = boto3.client("sns")
+
+table = dynamodb.Table("ContactMessages")
+
+SNS_TOPIC_ARN = "YOUR_SNS_TOPIC_ARN"
+
+
+def lambda_handler(event, context):
+
+    try:
+
+        body = json.loads(event.get("body", "{}"))
+
+        name = body.get("name")
+        email = body.get("email")
+        message = body.get("message")
+
+        if not name or not email or not message:
+            return {
+                "statusCode": 400,
+                "headers": {
+                    "Content-Type": "application/json"
+                },
+                "body": json.dumps({
+                    "message": "Name, email and message are required"
+                })
+            }
+
+        message_id = str(uuid.uuid4())
+
+        table.put_item(
+            Item={
+                "id": message_id,
+                "name": name,
+                "email": email,
+                "message": message,
+                "createdAt": datetime.utcnow().isoformat()
+            }
+        )
+
+        sns.publish(
+            TopicArn=SNS_TOPIC_ARN,
+            Subject="New Contact Form Submission",
+            Message=f"""
+New contact form submission
+
+Name: {name}
+Email: {email}
+
+Message:
+{message}
+"""
+        )
+
+        return {
+            "statusCode": 200,
+            "headers": {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            },
+            "body": json.dumps({
+                "message": "Message submitted successfully"
+            })
+        }
+
+    except Exception as e:
+
+        print(str(e))
+
+        return {
+            "statusCode": 500,
+            "headers": {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            },
+            "body": json.dumps({
+                "message": "Internal server error"
+            })
+        }
+```
+
+Change:
+
+```python
+SNS_TOPIC_ARN = "YOUR_SNS_TOPIC_ARN"
+```
+
+to your actual SNS ARN.
+
+For example:
+
+```python
+SNS_TOPIC_ARN = "arn:aws:sns:ap-south-1:123456789012:ContactNotifications"
+```
+
+---
+
+# PART 10 — Deploy Lambda
+
+Click:
+
+```text
+Deploy
+```
+
+Wait for:
+
+```text
+Successfully deployed
+```
+
+Now test the Lambda.
+
+---
+
+# PART 11 — Test Lambda
+
+Click:
+
+```text
+Test
+→ Create new event
+```
+
+Event name:
+
+```text
+ContactTest
+```
+
+Use:
+
+```json
+{
+  "body": "{\"name\":\"John\",\"email\":\"john@example.com\",\"message\":\"Hello AWS\"}"
+}
+```
+
+Click:
+
+```text
+Save
+```
+
+Then:
+
+```text
+Test
+```
+
+You should get approximately:
+
+```json
+{
+  "statusCode": 200,
+  "body": "{\"message\": \"Message submitted successfully\"}"
+}
+```
+
+---
+
+# PART 12 — Check DynamoDB
+
+Open:
+
+```text
+DynamoDB
+→ Tables
+→ ContactMessages
+→ Explore table items
+```
+
+You should see something like:
+
+```text
+id          name    email             message
+------------------------------------------------
+abc123...   John    john@example.com  Hello AWS
+```
+
+If you see the record, your Lambda → DynamoDB connection works.
+
+---
+
+# PART 13 — Check SNS
+
+Check your email.
+
+You should receive something like:
+
+```text
+Subject:
+New Contact Form Submission
+
+New contact form submission
+
+Name: John
+Email: john@example.com
+
+Message:
+Hello AWS
+```
+
+Now you have:
+
+```text
+Lambda
+   ↓
+DynamoDB
+   ↓
+SNS
+```
+
+working.
+
+---
+
+# PART 14 — Create API Gateway
+
+Now we expose Lambda to the internet.
+
+Open:
+
+```text
+AWS Console
+→ API Gateway
+→ Create API
+```
+
+Choose:
+
+```text
+HTTP API
+```
+
+HTTP API is appropriate for this simple application; AWS also documents HTTP APIs as a straightforward way to invoke Lambda. ([AWS Documentation][6])
+
+Click:
+
+```text
+Build
+```
+
+---
+
+# PART 15 — Connect API Gateway to Lambda
+
+Under integration:
+
+```text
+Add integration
+```
+
+Select:
+
+```text
+Lambda
+```
+
+Choose:
+
+```text
+ContactAppFunction
+```
+
+API name:
+
+```text
+ContactAPI
+```
+
+Click:
+
+```text
+Next
+```
+
+---
+
+# PART 16 — Create Route
+
+Create:
+
+```text
+POST /contact
+```
+
+So your API will look like:
+
+```text
+POST
+/contact
+       ↓
+ContactAppFunction
+```
+
+Click:
+
+```text
+Next
+```
+
+Then:
+
+```text
+Create
+```
+
+---
+
+# PART 17 — Get API URL
+
+Open:
+
+```text
+API Gateway
+→ ContactAPI
+```
+
+Find the **Invoke URL**.
+
+It will look similar to:
+
+```text
+https://abc123.execute-api.ap-south-1.amazonaws.com
+```
+
+Your endpoint becomes:
+
+```text
+https://abc123.execute-api.ap-south-1.amazonaws.com/contact
+```
+
+Copy this.
+
+---
+
+# PART 18 — Test API Gateway
+
+You can test from your computer using:
+
+```bash
+curl -X POST \
+"https://YOUR_API_ID.execute-api.ap-south-1.amazonaws.com/contact" \
+-H "Content-Type: application/json" \
+-d '{"name":"Alice","email":"alice@example.com","message":"Testing API Gateway"}'
+```
+
+Expected response:
+
+```json
+{
+  "message": "Message submitted successfully"
+}
+```
+
+Then check DynamoDB and your email.
+
+The complete request path is now:
+
+```text
+curl
+ ↓
+API Gateway
+ ↓
+Lambda
+ ↓
+DynamoDB
+ ↓
+SNS
+ ↓
+Email
+```
+
+AWS's documentation uses the same fundamental API Gateway → Lambda → DynamoDB pattern. ([AWS Documentation][4])
+
+---
+
+# PART 19 — Create the Website
+
+Now we'll create the frontend.
+
+Create a file on your computer:
+
+```text
+index.html
+```
+
+Put this code inside:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Contact Us</title>
+
+    <style>
+        body {
+            font-family: Arial;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+
+        input, textarea {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            box-sizing: border-box;
+        }
+
+        textarea {
+            height: 150px;
+        }
+
+        button {
+            padding: 12px 25px;
+            cursor: pointer;
+        }
+
+        #result {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>Contact Us</h1>
+
+    <form id="contactForm">
+
+        <input
+            type="text"
+            id="name"
+            placeholder="Your name"
+            required
+        >
+
+        <input
+            type="email"
+            id="email"
+            placeholder="Your email"
+            required
+        >
+
+        <textarea
+            id="message"
+            placeholder="Your message"
+            required
+        ></textarea>
+
+        <button type="submit">
+            Send Message
+        </button>
+
+    </form>
+
+    <div id="result"></div>
+
+    <script>
+
+        const API_URL =
+            "YOUR_API_GATEWAY_URL/contact";
+
+        document
+            .getElementById("contactForm")
+            .addEventListener("submit", async function(event) {
+
+                event.preventDefault();
+
+                const data = {
+                    name: document.getElementById("name").value,
+                    email: document.getElementById("email").value,
+                    message: document.getElementById("message").value
+                };
+
+                try {
+
+                    const response = await fetch(API_URL, {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+
+                        body: JSON.stringify(data)
+                    });
+
+                    const result = await response.json();
+
+                    document.getElementById("result").innerText =
+                        result.message;
+
+                } catch (error) {
+
+                    document.getElementById("result").innerText =
+                        "Something went wrong.";
+
+                    console.error(error);
+                }
+
+            });
+
+    </script>
+
+</body>
+</html>
+```
+
+Change:
+
+```javascript
+const API_URL =
+    "YOUR_API_GATEWAY_URL/contact";
+```
+
+For example:
+
+```javascript
+const API_URL =
+    "https://abc123.execute-api.ap-south-1.amazonaws.com/contact";
+```
+
+---
+
+# PART 20 — Create S3 Bucket
+
+Now we'll host the website.
+
+Open:
+
+```text
+AWS Console
+→ S3
+→ Create bucket
+```
+
+Bucket name must be globally unique.
+
+For example:
+
+```text
+my-contact-app-2026-12345
+```
+
+Choose your region.
+
+Keep the rest simple.
+
+### Important
+
+For a basic S3 static website, you'll need to configure the bucket for website access. AWS's current S3 pricing is usage-based, and new customers may have Free Tier credits applicable to S3. ([Amazon Web Services, Inc.][7])
+
+For a **learning/demo application**, we'll use the simple public website approach.
+
+---
+
+# PART 21 — Upload index.html
+
+Open:
+
+```text
+my-contact-app-2026-12345
+```
+
+Click:
+
+```text
+Upload
+```
+
+Select:
+
+```text
+index.html
+```
+
+Click:
+
+```text
+Upload
+```
+
+---
+
+# PART 22 — Enable Static Website Hosting
+
+Inside the bucket:
+
+```text
+Properties
+```
+
+Scroll to:
+
+```text
+Static website hosting
+```
+
+Click:
+
+```text
+Edit
+```
+
+Select:
+
+```text
+Enable
+```
+
+Hosting type:
+
+```text
+Host a static website
+```
+
+Index document:
+
+```text
+index.html
+```
+
+Click:
+
+```text
+Save changes
+```
+
+---
+
+# PART 23 — Configure S3 Permissions
+
+Go to:
+
+```text
+Permissions
+```
+
+You may see:
+
+```text
+Block public access
+```
+
+For this simple public website, you'll need to adjust the relevant Block Public Access settings.
+
+**Be careful here:** making an S3 bucket public means its objects can be accessed by anyone who knows the URL. Do not put passwords, API keys, private documents, or secrets in this bucket.
+
+Then add a bucket policy allowing public `GetObject`.
+
+Use:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PublicRead",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME/*"
+    }
+  ]
+}
+```
+
+Replace:
+
+```text
+YOUR_BUCKET_NAME
+```
+
+with your actual bucket name.
+
+For example:
+
+```json
+"Resource": "arn:aws:s3:::my-contact-app-2026-12345/*"
+```
+
+Save the policy.
+
+---
+
+# PART 24 — Find Website URL
+
+Go back to:
+
+```text
+S3
+→ Your bucket
+→ Properties
+→ Static website hosting
+```
+
+You'll see:
+
+```text
+Bucket website endpoint
+```
+
+It will look something like:
+
+```text
+http://my-contact-app-2026-12345.s3-website-ap-south-1.amazonaws.com
+```
+
+Open that URL.
+
+Your website should appear.
+
+---
+
+# PART 25 — CORS
+
+There is one important piece left.
+
+Your frontend is hosted on S3:
+
+```text
+S3 website
+```
+
+but your API is hosted at:
+
+```text
+API Gateway
+```
+
+These are different origins.
+
+So configure CORS on API Gateway.
+
+Open:
+
+```text
+API Gateway
+→ ContactAPI
+→ CORS
+```
+
+For a simple learning application, you can temporarily configure:
+
+```text
+Allowed origins:
+*
+```
+
+Allowed methods:
+
+```text
+POST
+OPTIONS
+```
+
+Allowed headers:
+
+```text
+content-type
+```
+
+Save the CORS configuration.
+
+### For a real production application
+
+Don't leave:
+
+```text
+*
+```
+
+if you don't need it.
+
+Instead specify your actual website origin.
+
+---
+
+# PART 26 — Test the complete application
+
+Open your S3 website.
+
+You should see:
+
+```text
+Contact Us
+
+Your name
+Your email
+Your message
+
+[ Send Message ]
+```
+
+Enter:
+
+```text
+Name:
+John
+
+Email:
+john@example.com
+
+Message:
+Hello from my AWS application!
+```
+
+Click:
+
+```text
+Send Message
+```
+
+The complete process is:
+
+```text
+             S3
+              |
+              | HTML/CSS/JS
+              v
+            Browser
+              |
+              | POST /contact
+              v
+        +-------------+
+        | API Gateway |
+        +-------------+
+              |
+              v
+        +-------------+
+        |   Lambda    |
+        +-------------+
+          /         \
+         /           \
+        v             v
+   +---------+     +---------+
+   |DynamoDB |     |   SNS   |
+   +---------+     +---------+
+                       |
+                       v
+                     Email
+```
+
+---
+
+# PART 27 — What each service is doing
+
+This is important for understanding the project.
+
+| AWS Service     | Purpose                                     |
+| --------------- | ------------------------------------------- |
+| **IAM**         | Gives Lambda permission to use AWS services |
+| **S3**          | Hosts your HTML/CSS/JavaScript              |
+| **API Gateway** | Provides the public API endpoint            |
+| **Lambda**      | Runs your backend Python code               |
+| **DynamoDB**    | Stores contact messages                     |
+| **SNS**         | Sends notification email                    |
+
+So if you're explaining this project in an interview:
+
+> **S3 hosts the frontend. API Gateway exposes the REST/HTTP endpoint. Lambda processes the request. DynamoDB stores the submitted data. SNS sends a notification. IAM provides the required permissions.**
+
+---
+
+# PART 28 — Final project structure
+
+You only need:
+
+```text
+contact-app/
+│
+└── index.html
+```
+
+The backend lives inside Lambda:
+
+```text
+Lambda
+└── lambda_function.py
+```
+
+DynamoDB:
+
+```text
+ContactMessages
+└── id
+```
+
+SNS:
+
+```text
+ContactNotifications
+└── Email subscription
+```
+
+API Gateway:
+
+```text
+ContactAPI
+└── POST /contact
+```
+
+---
+
+# PART 29 — Your IAM architecture
+
+Think about IAM like this:
+
+```text
+                   IAM ROLE
+                       |
+                       v
+              ContactAppFunction
+                    Lambda
+                  /       \
+                 /         \
+                v           v
+          DynamoDB         SNS
+```
+
+The role should have only the permissions the function needs.
+
+For this project:
+
+```text
+dynamodb:PutItem
+sns:Publish
+```
+
+plus Lambda logging permissions.
+
+Don't give the Lambda role:
+
+```text
+AdministratorAccess
+```
+
+for a simple application.
+
+---
+
+# PART 30 — Important Free Tier precautions
+
+Since you specifically want a **free-tier learning project**, I recommend these settings:
+
+### Lambda
+
+Use:
+
+```text
+128 MB
+```
+
+No provisioned concurrency.
+
+Lambda currently provides 1 million requests and 400,000 GB-seconds of monthly free usage. ([Amazon Web Services, Inc.][2])
+
+### API Gateway
+
+Use:
+
+```text
+HTTP API
+```
+
+rather than REST API for this simple project.
+
+The current API Gateway pricing page lists 1 million HTTP API calls/month in its Free Tier for qualifying new customers for up to 12 months. ([Amazon Web Services, Inc.][8])
+
+### DynamoDB
+
+For this tutorial, keep the table tiny and don't enable unnecessary features such as:
+
+```text
+Point-in-time recovery
+Global tables
+DAX
+Large backups
+```
+
+DynamoDB's current free tier includes 25 RCUs, 25 WCUs and 25 GB of storage for Standard tables. ([Amazon Web Services, Inc.][5])
+
+### SNS
+
+Use:
+
+```text
+Email
+```
+
+**Do not use SMS** for this tutorial.
+
+SNS currently provides a free allowance for email notifications, while SMS pricing varies by destination. ([Amazon Web Services, Inc.][3])
+
+### S3
+
+Keep only:
+
+```text
+index.html
+```
+
+in the bucket.
+
+Don't upload large videos, backups, databases, etc.
+
+S3 charges according to storage, requests, transfer and other usage, so keeping the demo tiny minimizes the possibility of charges. ([Amazon Web Services, Inc.][7])
+
+---
+
+# PART 31 — VERY IMPORTANT: Delete everything when finished
+
+When you're finished learning, delete the resources.
+
+### 1. S3
+
+Delete:
+
+```text
+index.html
+```
+
+Then:
+
+```text
+Delete bucket
+```
+
+### 2. API Gateway
+
+Delete:
+
+```text
+ContactAPI
+```
+
+### 3. Lambda
+
+Delete:
+
+```text
+ContactAppFunction
+```
+
+### 4. DynamoDB
+
+Delete:
+
+```text
+ContactMessages
+```
+
+### 5. SNS
+
+Delete:
+
+```text
+ContactNotifications
+```
+
+and its subscription.
+
+### 6. IAM
+
+Delete:
+
+```text
+ContactAppLambdaPolicy
+```
+
+and:
+
+```text
+ContactAppLambdaRole
+```
+
+This prevents you from accidentally leaving resources running.
+
+---
+
+# The entire project in one picture
+
+```text
+                         INTERNET
+                            |
+                            v
+                    +---------------+
+                    |      S3       |
+                    | index.html    |
+                    +---------------+
+                            |
+                            | HTTPS
+                            v
+                    +---------------+
+                    | API GATEWAY   |
+                    | POST /contact |
+                    +---------------+
+                            |
+                            v
+                    +---------------+
+                    |    LAMBDA     |
+                    | Python/Boto3  |
+                    +---------------+
+                       /         \
+                      /           \
+                     v             v
+            +---------------+   +---------------+
+            |   DYNAMODB    |   |      SNS      |
+            |ContactMessages|   |Notifications  |
+            +---------------+   +---------------+
+                                      |
+                                      v
+                                    EMAIL
+
+
+              +----------------------+
+              |         IAM          |
+              | Lambda permissions   |
+              +----------------------+
+                    |          |
+                    +----------+
+                         |
+                    Lambda Role
+```
+
+This is a **real serverless architecture**, but still simple enough to build manually in the AWS Console. AWS's own tutorials demonstrate the Lambda + API Gateway + DynamoDB approach, including creating the Lambda execution role, API, DynamoDB table, deployment and HTTP testing. ([AWS Documentation][4])
+
+### Recommended build order
+
+Don't try to create everything simultaneously. Follow exactly this order:
+
+```text
+1. Select AWS Region
+        ↓
+2. DynamoDB
+        ↓
+3. SNS Topic + Email
+        ↓
+4. IAM Role + Policy
+        ↓
+5. Lambda
+        ↓
+6. Test Lambda
+        ↓
+7. API Gateway
+        ↓
+8. Test API
+        ↓
+9. S3
+        ↓
+10. Upload index.html
+        ↓
+11. S3 Website
+        ↓
+12. CORS
+        ↓
+13. Test complete application
+```
+
+
